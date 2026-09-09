@@ -6,11 +6,14 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Out = (Join-Path $PSScriptRoot 'CaretLangIndicator.exe')
+    [string]$Out
 )
 
 $ErrorActionPreference = 'Stop'
+# Resolve the script folder before using it: a default computed in param() runs
+# before this line, and $PSScriptRoot is empty under some invocation styles.
 if (-not $PSScriptRoot) { $PSScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path }
+if (-not $Out) { $Out = Join-Path $PSScriptRoot 'CaretLangIndicator.exe' }
 
 $fw  = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319'
 $csc = Join-Path $fw 'csc.exe'

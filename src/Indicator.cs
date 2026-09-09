@@ -14,6 +14,7 @@ using System.Windows.Automation.Text;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
 using System.Windows.Threading;
 
@@ -47,6 +48,7 @@ static class Native
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(IntPtr hWnd, out int pid);
     [DllImport("user32.dll")] public static extern IntPtr GetKeyboardLayout(int idThread);
+    [DllImport("user32.dll")] public static extern int GetKeyboardLayoutList(int nBuff, [Out] IntPtr[] lpList);
     [DllImport("user32.dll")] public static extern bool GetGUIThreadInfo(int idThread, ref GUITHREADINFO gti);
     [DllImport("user32.dll")] public static extern short GetKeyState(int nVirtKey);
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hWnd, ref POINT pt);
@@ -101,6 +103,14 @@ static class Options
     public static int Interval = 120;
     public static bool OnlyWhenCaps;
     public static bool Glass;
+    // macOS-style: stay out of the way, appear for a moment when the input
+    // source changes. Also means UI Automation is only touched at that moment
+    // instead of several times a second.
+    public static bool OnlyOnChange;
+    public static int ShowMs = 1200;
+    // Render every installed layout in a row with a sliding selection, the way
+    // the macOS input source HUD does, instead of a single pill.
+    public static bool Switcher;
 
     public static void Parse(string[] args)
     {
@@ -117,12 +127,22 @@ static class Options
                 case "offsetx":      OffsetX = int.Parse(next); i++; break;
                 case "offsety":      OffsetY = int.Parse(next); i++; break;
                 case "fieldgap":     FieldGap = int.Parse(next); i++; break;
-                case "interval":     Interval = int.Parse(next); i++; break;
+                case "interval":     Interval = int.Parse(next); intervalSet = true; i++; break;
                 case "onlywhencaps": OnlyWhenCaps = true; break;
+                case "onlyonchange": OnlyOnChange = true; break;
+                case "showms":       ShowMs = int.Parse(next); i++; break;
+                case "switcher":     Switcher = true; break;
                 case "glass":        Glass = true; break;
             }
         }
+
+        // While hidden, a tick is three same-process calls, so it can be far
+        // more frequent than the old default - and the panel has to appear the
+        // moment the layout changes, not up to 120 ms later.
+        if (OnlyOnChange && !intervalSet) Interval = 40;
     }
+
+    static bool intervalSet;
 }
 
 static class Detector
@@ -179,6 +199,50 @@ static class Detector
             return true;
         }
         catch { return false; }
+    }
+
+    // Two-letter codes for every layout installed in the system, in the order
+    // Windows keeps them. Read once at startup - installing a layout mid-run is
+    // rare enough not to poll for.
+    public static string[] GetLayouts()
+    {
+        try
+        {
+            int n = Native.GetKeyboardLayoutList(0, null);
+            if (n <= 0) return new string[0];
+            IntPtr[] list = new IntPtr[n];
+            Native.GetKeyboardLayoutList(n, list);
+
+            System.Collections.Generic.List<string> outp = new System.Collections.Generic.List<string>();
+            foreach (IntPtr hkl in list)
+            {
+                string code;
+                try { code = CultureInfo.GetCultureInfo((int)(hkl.ToInt64() & 0xFFFF)).TwoLetterISOLanguageName.ToUpperInvariant(); }
+                catch { continue; }
+                if (!outp.Contains(code)) outp.Add(code);
+            }
+            return outp.ToArray();
+        }
+        catch { return new string[0]; }
+    }
+
+    // Layout and Caps Lock only: three cheap same-process calls, no UI
+    // Automation. Safe to run on the dispatcher every tick.
+    public static void ReadQuick(out string layout, out bool caps)
+    {
+        layout = "??";
+        caps = (Native.GetKeyState(Native.VK_CAPITAL) & 1) == 1;
+
+        IntPtr fg = Native.GetForegroundWindow();
+        if (fg == IntPtr.Zero) return;
+        int procId;
+        int tid = Native.GetWindowThreadProcessId(fg, out procId);
+        if (tid == 0) return;
+
+        IntPtr hkl = Native.GetKeyboardLayout(tid);
+        int langId = (int)(hkl.ToInt64() & 0xFFFF);
+        try { layout = CultureInfo.GetCultureInfo(langId).TwoLetterISOLanguageName.ToUpperInvariant(); }
+        catch { layout = "??"; }
     }
 
     public static InputState Read()
@@ -323,7 +387,7 @@ class Badge
         row.Children.Add(label);
 
         pill = new Border();
-        pill.Child = row;
+        pill.Child = Options.Switcher ? (UIElement)BuildSwitcher() : row;
         if (Options.Glass)
         {
             pill.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#33000000"));
@@ -332,15 +396,23 @@ class Badge
         else
         {
             pill.Background = pillDark;
-            pill.CornerRadius = new CornerRadius(11);
+            pill.CornerRadius = new CornerRadius(Options.Switcher ? 12 : 11);
             pill.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#26FFFFFF"));
             pill.BorderThickness = new Thickness(1);
-            pill.Padding = new Thickness(9, 3, 11, 4);
+            // in switcher mode the cells carry their own spacing
+            pill.Padding = Options.Switcher ? new Thickness(4) : new Thickness(9, 3, 11, 4);
             pill.Margin = new Thickness(8);
-            DropShadowEffect fx = new DropShadowEffect();
-            fx.BlurRadius = 12; fx.ShadowDepth = 1.5; fx.Direction = 270; fx.Opacity = 0.5;
-            fx.Color = Colors.Black;
-            pill.Effect = fx;
+            // The shadow is a software blur recomputed every frame on a layered
+            // window, which makes the sliding selection stutter. Skip it in
+            // switcher mode; the border already separates the panel from what
+            // is behind it.
+            if (!Options.Switcher)
+            {
+                DropShadowEffect fx = new DropShadowEffect();
+                fx.BlurRadius = 12; fx.ShadowDepth = 1.5; fx.Direction = 270; fx.Opacity = 0.5;
+                fx.Color = Colors.Black;
+                pill.Effect = fx;
+            }
         }
 
         Win = new Window();
@@ -371,11 +443,104 @@ class Badge
         Win.Hide();
     }
 
+    // --- switcher mode ---------------------------------------------------
+    // A row of fixed-width cells, one per installed layout, with a rounded
+    // selection that slides between them. Fixed cells keep the geometry
+    // trivial and match how the macOS HUD lays its sources out.
+
+    const double CellW = 46, CellH = 28;
+    Canvas track;
+    Border sel;
+    TranslateTransform slide;
+    string[] layouts = new string[0];
+    TextBlock[] cells = new TextBlock[0];
+    int selIndex = -1;
+
+    readonly Brush accent   = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#0A84FF")); // macOS system blue, dark appearance
+    readonly Brush inkIdle  = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#98989D")); // secondary label
+
+    Canvas BuildSwitcher()
+    {
+        layouts = Detector.GetLayouts();
+        if (layouts.Length == 0) layouts = new string[] { "EN" };
+
+        track = new Canvas();
+        track.Width = CellW * layouts.Length;
+        track.Height = CellH;
+
+        sel = new Border();
+        sel.Width = CellW - 8;
+        sel.Height = CellH - 6;
+        sel.CornerRadius = new CornerRadius(7);
+        sel.Background = accent;
+        Canvas.SetTop(sel, 3);
+        Canvas.SetLeft(sel, 4);
+        sel.Opacity = 0;                       // nothing selected until the first update
+        // Slide via a render transform, not Canvas.Left: moving the attached
+        // property re-runs measure and arrange on every frame, and this window
+        // is layered (AllowsTransparency), so all of that is done in software.
+        slide = new TranslateTransform();
+        sel.RenderTransform = slide;
+        track.Children.Add(sel);
+
+        cells = new TextBlock[layouts.Length];
+        for (int i = 0; i < layouts.Length; i++)
+        {
+            TextBlock t = new TextBlock();
+            t.Text = layouts[i];
+            t.Foreground = inkIdle;
+            t.FontFamily = new FontFamily("Segoe UI Variable Small, Segoe UI");
+            t.FontWeight = FontWeights.SemiBold;
+            t.FontSize = 12.5;
+            t.Width = CellW;
+            t.Height = CellH;
+            t.TextAlignment = TextAlignment.Center;
+            t.Padding = new Thickness(0, 6, 0, 0);
+            Canvas.SetLeft(t, i * CellW);
+            Canvas.SetTop(t, 0);
+            track.Children.Add(t);
+            cells[i] = t;
+        }
+        return track;
+    }
+
+    void SelectCell(string text, bool caps)
+    {
+        int idx = -1;
+        for (int i = 0; i < layouts.Length; i++) if (layouts[i] == text) { idx = i; break; }
+        if (idx < 0) return;
+
+        sel.Background = caps ? pillCaps : accent;
+        for (int i = 0; i < cells.Length; i++)
+            cells[i].Foreground = (i == idx) ? (caps ? inkDark : inkLight) : inkIdle;
+
+        double target = idx * CellW;
+        if (selIndex < 0)
+        {
+            // first paint: appear in place rather than sliding in from the edge
+            slide.BeginAnimation(TranslateTransform.XProperty, null);
+            slide.X = target;
+            sel.Opacity = 1;
+        }
+        else if (idx != selIndex)
+        {
+            DoubleAnimation a = new DoubleAnimation(target, new Duration(TimeSpan.FromMilliseconds(170)));
+            a.EasingFunction = new CubicEase();   // EaseOut by default
+            slide.BeginAnimation(TranslateTransform.XProperty, a);
+        }
+        selIndex = idx;
+    }
+
     public void SetContent(string text, bool caps)
     {
         if (text == lastText && caps == lastCaps) return;
         lastText = text;
         lastCaps = caps;
+
+        // No UpdateLayout here: the switcher's size never changes, and forcing a
+        // synchronous layout pass on a layered window is exactly what we are
+        // trying to avoid.
+        if (Options.Switcher) { SelectCell(text, caps); return; }
 
         label.Text = text;
         if (Options.Glass)
@@ -419,6 +584,20 @@ class Badge
 
 static class Program
 {
+    // 0 = idle, 1 = a detection pass is in flight.
+    // UI Automation calls are cross-process and are served by the target
+    // application's UI thread, so a busy Chromium window can stall them for
+    // tens of milliseconds. They therefore run on a pool thread (which is MTA,
+    // the mode UIA clients are supposed to use) and never on the dispatcher —
+    // otherwise the badge cannot repaint while a call is outstanding, which is
+    // exactly the lag you see while typing fast.
+    static int busy;
+
+    // -OnlyOnChange bookkeeping
+    static string lastLayout;
+    static bool lastCaps;
+    static int showUntil;
+
     [STAThread]
     static void Main(string[] args)
     {
@@ -432,6 +611,7 @@ static class Program
             Badge badge = new Badge();
             Forms.Screen screen = Forms.Screen.PrimaryScreen;
             System.Drawing.Rectangle work = screen.WorkingArea;
+            Dispatcher ui = Dispatcher.CurrentDispatcher;
 
             Forms.NotifyIcon tray = new Forms.NotifyIcon();
             tray.Icon = System.Drawing.SystemIcons.Information;
@@ -449,7 +629,57 @@ static class Program
             timer.Interval = TimeSpan.FromMilliseconds(Options.Interval);
             timer.Tick += delegate
             {
-                InputState s = Detector.Read();
+                // Cheap pass first — this is all that runs while the badge is
+                // hidden, so idle cost is three same-process calls per tick.
+                string layout; bool caps;
+                Detector.ReadQuick(out layout, out caps);
+                bool changed = lastLayout != null && (layout != lastLayout || caps != lastCaps);
+                lastLayout = layout;
+                lastCaps = caps;
+
+                if (Options.OnlyOnChange)
+                {
+                    if (changed) showUntil = Environment.TickCount + Options.ShowMs;
+                    if (unchecked(Environment.TickCount - showUntil) > 0)
+                    {
+                        badge.HideBadge();
+                        return;
+                    }
+                    // Position once, when it appears; for the rest of the window
+                    // leave it where it is rather than chasing the caret.
+                    if (!changed) return;
+                }
+
+                // Skip the tick outright if the previous pass has not returned,
+                // instead of queueing work behind a window that is already slow.
+                if (Interlocked.CompareExchange(ref busy, 1, 0) != 0) return;
+
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    InputState s;
+                    try { s = Detector.Read(); }
+                    catch { s = new InputState(); }
+                    finally { Interlocked.Exchange(ref busy, 0); }
+
+                    ui.BeginInvoke(DispatcherPriority.Render, (Action)delegate
+                    {
+                        Render(badge, s, work);
+                    });
+                });
+            };
+            timer.Start();
+
+            Dispatcher.Run();
+
+            tray.Visible = false;
+            tray.Dispose();
+        }
+    }
+
+    static void Render(Badge badge, InputState s, System.Drawing.Rectangle work)
+    {
+        {
+            {
                 badge.SetContent(s.Layout, s.Caps);
 
                 double w = badge.Win.ActualWidth;
@@ -511,13 +741,7 @@ static class Program
                     badge.ShowAt(x, y);
                 }
                 else badge.HideBadge();
-            };
-            timer.Start();
-
-            Dispatcher.Run();
-
-            tray.Visible = false;
-            tray.Dispose();
+            }
         }
     }
 }

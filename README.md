@@ -153,12 +153,43 @@ start it with Windows, put a shortcut in `shell:startup`.
 | `-OffsetY` | pixels | `2` | vertical nudge |
 | `-FieldGap` | pixels | `12` | gap from the edge of a field |
 | `-OnlyWhenCaps` | — | off | show only while Caps Lock is on |
+| `-OnlyOnChange` | — | off | stay hidden, appear briefly when the layout changes |
+| `-ShowMs` | ms | `1200` | how long it stays up in that mode |
+| `-Switcher` | — | off | show every installed layout in a row, macOS HUD style |
 | `-Glass` | — | off | Windows 11 acrylic instead of the flat dark pill |
-| `-Interval` | ms | `120` | polling interval |
+| `-Interval` | ms | `120` | polling interval (`40` when `-OnlyOnChange`) |
 
 `-Anchor Corner` parks the badge in a fixed screen corner, which never covers
 anything. `-OnlyWhenCaps` gives the macOS arrangement: layout in a menu bar
 somewhere, the badge only for Caps Lock.
+
+### macOS HUD mode
+
+```powershell
+.\CaretLangIndicator.exe -OnlyOnChange -Switcher
+```
+
+This is what macOS actually does: nothing on screen until you switch, then a
+panel appears near the caret listing every installed input source with the
+active one highlighted, and the highlight slides when you switch again.
+
+It is also by far the cheapest mode. While hidden, a tick is three
+same-process calls — `GetForegroundWindow`, `GetKeyboardLayout`, `GetKeyState`
+— and UI Automation runs once per switch instead of eight times a second.
+
+Three things matter for it to feel instant, and all three were wrong at first:
+
+- The selection slides with a `RenderTransform`, not `Canvas.Left`. Animating
+  the attached property re-runs measure and arrange every frame.
+- No `DropShadowEffect`. `AllowsTransparency` makes the window layered and
+  therefore software-rendered, so the blur was recomputed 60 times a second.
+- No `UpdateLayout()` on selection change — the panel's size never changes.
+
+UI Automation, for the record, was not the bottleneck: `FocusedElement`
+measured 3.8 ms on average and `TextPattern` 1.4 ms. It still runs off the
+dispatcher, on a pool thread, because that is the threading model UIA clients
+are supposed to use and because a busy target window can stall a call for far
+longer than the average suggests.
 
 ### The PowerShell version
 
