@@ -1,0 +1,19 @@
+# Assets that belong to Apple or Microsoft — never commit these.
+# sounds/Install-MacSounds.ps1 fetches and converts the macOS ones for you.
+*.wav
+*.aiff
+sounds/windows-media-backup/
+
+# macOS wallpapers and anything derived from them
+*.jpg
+*.png
+fitted/
+preview/
+
+# Build output
+*.exe
+
+# Local noise
+cleanup.log
+*.bak
+*.bak-*
