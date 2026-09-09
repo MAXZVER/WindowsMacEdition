@@ -139,7 +139,7 @@ static class Options
         // While hidden, a tick is three same-process calls, so it can be far
         // more frequent than the old default - and the panel has to appear the
         // moment the layout changes, not up to 120 ms later.
-        if (OnlyOnChange && !intervalSet) Interval = 40;
+        if (OnlyOnChange && !intervalSet) Interval = 15;
     }
 
     static bool intervalSet;
@@ -440,7 +440,11 @@ class Badge
                 src.CompositionTarget.BackgroundColor = Colors.Transparent;
             Native.EnableGlass(h);
         }
-        Win.Hide();
+        // Keep the window alive and just fade it: creating and destroying a
+        // layered window on every switch is the slowest step in the path.
+        // Glass mode keeps Show/Hide - forcing opacity on a non-layered window
+        // would fight the DWM backdrop.
+        if (Options.Glass) Win.Hide(); else Win.Opacity = 0;
     }
 
     // --- switcher mode ---------------------------------------------------
@@ -573,12 +577,81 @@ class Badge
             Win.Top = y;
             lastX = x; lastY = y;
         }
-        if (!shown) { Win.Show(); shown = true; }
+        if (!shown)
+        {
+            if (Options.Glass) Win.Show(); else Win.Opacity = 1;
+            shown = true;
+        }
     }
 
     public void HideBadge()
     {
-        if (shown) { Win.Hide(); shown = false; }
+        if (shown)
+        {
+            if (Options.Glass) Win.Hide(); else Win.Opacity = 0;
+            shown = false;
+        }
+    }
+}
+
+// Tray icon drawn at run time rather than shipped as a .ico: it has to carry
+// the current layout anyway, the way the macOS menu bar shows the active input
+// source, so it cannot be a static image. Types are fully qualified because
+// System.Drawing and System.Windows.Media collide on Brush, Font and Color.
+static class TrayArt
+{
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern bool DestroyIcon(IntPtr hIcon);
+
+    public static System.Drawing.Icon Make(string text, bool caps)
+    {
+        const int Size = 32;
+        using (System.Drawing.Bitmap bmp = new System.Drawing.Bitmap(Size, Size))
+        using (System.Drawing.Graphics g = System.Drawing.Graphics.FromImage(bmp))
+        {
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+            g.Clear(System.Drawing.Color.Transparent);
+
+            System.Drawing.Color ink = caps
+                ? System.Drawing.Color.FromArgb(255, 245, 179, 64)   // amber, matches the caps pill
+                : System.Drawing.Color.White;
+
+            using (System.Drawing.Brush b = new System.Drawing.SolidBrush(ink))
+            // GenericTypographic, not the default: the default format pads a
+            // string by roughly a sixth of an em on each side, which on a 32 px
+            // tile costs several points of type size for nothing.
+            using (System.Drawing.StringFormat sf = (System.Drawing.StringFormat)System.Drawing.StringFormat.GenericTypographic.Clone())
+            {
+                sf.Alignment = System.Drawing.StringAlignment.Center;
+                sf.LineAlignment = System.Drawing.StringAlignment.Center;
+                sf.FormatFlags = System.Drawing.StringFormatFlags.NoWrap;
+
+                // Fill the tile: start large and step down until it fits, rather
+                // than hard-coding a size that only suits two-letter codes.
+                System.Drawing.Font f = null;
+                try
+                {
+                    for (float px = 30f; px >= 10f; px -= 1f)
+                    {
+                        if (f != null) f.Dispose();
+                        f = new System.Drawing.Font("Segoe UI", px, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Pixel);
+                        // Measure unconstrained: passing a width here clamps the
+                        // result to it, so the text always looks like it fits
+                        // and the loop never shrinks anything.
+                        System.Drawing.SizeF m = g.MeasureString(text, f, System.Drawing.PointF.Empty, sf);
+                        if (m.Width <= Size - 1 && m.Height <= Size - 1) break;
+                    }
+                    g.DrawString(text, f, b, new System.Drawing.RectangleF(0, 0, Size, Size), sf);
+                }
+                finally { if (f != null) f.Dispose(); }
+            }
+
+            // FromHandle does not own the handle, so clone and free the original.
+            IntPtr h = bmp.GetHicon();
+            try { return (System.Drawing.Icon)System.Drawing.Icon.FromHandle(h).Clone(); }
+            finally { DestroyIcon(h); }
+        }
     }
 }
 
@@ -597,6 +670,12 @@ static class Program
     static string lastLayout;
     static bool lastCaps;
     static int showUntil;
+    static double lastShownX = double.NaN, lastShownY;
+
+    // tray state
+    static System.Drawing.Icon trayIcon;
+    static string trayLayout;
+    static bool trayCaps;
 
     [STAThread]
     static void Main(string[] args)
@@ -614,7 +693,8 @@ static class Program
             Dispatcher ui = Dispatcher.CurrentDispatcher;
 
             Forms.NotifyIcon tray = new Forms.NotifyIcon();
-            tray.Icon = System.Drawing.SystemIcons.Information;
+            trayIcon = TrayArt.Make("--", false);
+            tray.Icon = trayIcon;
             tray.Text = "Caret language indicator";
             Forms.ContextMenuStrip menu = new Forms.ContextMenuStrip();
             menu.Items.Add("Exit").Click += delegate
@@ -625,7 +705,10 @@ static class Program
             tray.ContextMenuStrip = menu;
             tray.Visible = true;
 
-            DispatcherTimer timer = new DispatcherTimer();
+            // DispatcherTimer defaults to Background priority, which other work
+            // on the queue can starve - a poll meant to run every 15 ms then
+            // fires late and the panel appears late with it.
+            DispatcherTimer timer = new DispatcherTimer(DispatcherPriority.Normal);
             timer.Interval = TimeSpan.FromMilliseconds(Options.Interval);
             timer.Tick += delegate
             {
@@ -633,6 +716,26 @@ static class Program
                 // hidden, so idle cost is three same-process calls per tick.
                 string layout; bool caps;
                 Detector.ReadQuick(out layout, out caps);
+
+                // Holding the switch modifier brings up the Windows input
+                // switcher flyout, which takes the foreground. Its thread has no
+                // layout we can map, and treating that as a change would both
+                // restart the timer and leave the highlight stale.
+                if (layout == "??") return;
+
+                // The tray always reflects the current state, in every mode -
+                // this is the persistent half, the panel is the transient one.
+                if (layout != trayLayout || caps != trayCaps)
+                {
+                    trayLayout = layout;
+                    trayCaps = caps;
+                    System.Drawing.Icon old = trayIcon;
+                    trayIcon = TrayArt.Make(layout, caps);
+                    tray.Icon = trayIcon;
+                    tray.Text = caps ? layout + " - Caps Lock" : layout;
+                    if (old != null) old.Dispose();
+                }
+
                 bool changed = lastLayout != null && (layout != lastLayout || caps != lastCaps);
                 lastLayout = layout;
                 lastCaps = caps;
@@ -661,7 +764,9 @@ static class Program
                     catch { s = new InputState(); }
                     finally { Interlocked.Exchange(ref busy, 0); }
 
-                    ui.BeginInvoke(DispatcherPriority.Render, (Action)delegate
+                    // Send, not Render: Render sits below Normal on the queue,
+                    // so the result waited behind whatever else was pending.
+                    ui.BeginInvoke(DispatcherPriority.Send, (Action)delegate
                     {
                         Render(badge, s, work);
                     });
@@ -738,7 +843,16 @@ static class Program
                     if (y + h > work.Bottom) y = work.Bottom - h;
                     if (x < work.Left) x = work.Left;
                     if (y < work.Top) y = work.Top;
+                    lastShownX = x; lastShownY = y;
                     badge.ShowAt(x, y);
+                }
+                else if (Options.OnlyOnChange && !double.IsNaN(lastShownX)
+                         && unchecked(Environment.TickCount - showUntil) <= 0)
+                {
+                    // No anchor this pass - typically the input switcher flyout
+                    // holding the foreground while the modifier is down. Stay
+                    // where we were instead of blinking out mid-switch.
+                    badge.ShowAt(lastShownX, lastShownY);
                 }
                 else badge.HideBadge();
             }

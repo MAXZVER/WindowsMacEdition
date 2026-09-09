@@ -139,8 +139,13 @@ Nothing to install — the C# compiler ships with Windows:
 ```
 
 It compiles `src/Indicator.cs` with `csc.exe` from
-`C:\Windows\Microsoft.NET\Framework64\v4.0.30319` and writes a 17 KB exe. To
+`C:\Windows\Microsoft.NET\Framework64\v4.0.30319` and writes a ~20 KB exe. To
 start it with Windows, put a shortcut in `shell:startup`.
+
+The tray icon carries the current layout — `EN`, `RU` — and turns amber while
+Caps Lock is on, so it works like the macOS menu bar: the tray is the state you
+can always glance at, the panel is the moment of change. It is drawn at run
+time rather than shipped as a `.ico`, since it has to change with the layout.
 
 ### Options
 
