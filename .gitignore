@@ -17,3 +17,6 @@ preview/
 cleanup.log
 *.bak
 *.bak-*
+
+# Logs from the logon check
+startup/startup-check.log
