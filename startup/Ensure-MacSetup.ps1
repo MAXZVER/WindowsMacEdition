@@ -129,9 +129,9 @@ function Ensure-Running([string]$processName, [string]$exe, [string]$arguments) 
 Ensure-Running 'CaretLangIndicator' $indicatorExe $indicatorArgs
 Ensure-Running 'DynamicIsland'      $islandExe    ''
 
-# 4. Note anything that vanished, without touching it ----------------------
-if (-not (Test-Path 'HKLM:\SOFTWARE\Windhawk')) {
-    Note 'Windhawk is not installed (its mods are gone with it)'
-}
+# Windhawk is deliberately not part of this setup any more. It carried nine
+# mods - smooth scrolling, menu and Explorer animations, invisible borders -
+# but it crashed four times in a week, three of those inside its own Direct2D
+# UI, and took the shell down with it. Nothing here depends on it.
 
 Note '--- done ---'
