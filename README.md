@@ -14,14 +14,11 @@ except PowerToys for the keyboard part.
 
 ## Keyboard
 
-Gives you `Control, Option, Command, Space` and macOS text navigation.
+Gives you `Windows, Option, Command, Space` and macOS text navigation, and
+flips back to the stock arrangement in a second when you want to play a game.
 
 ```powershell
-# elevated, then reboot
-reg import keyboard\MacLayout-WinMode-APPLY.reg
-
-# normal shell
-.\keyboard\Install-KeyboardRemaps.ps1
+.\keyboard\Install-KeyboardRemaps.ps1     # no admin needed
 ```
 
 **Keep the keyboard in Windows mode.** Boards like the Lofree Flow have a
@@ -31,23 +28,34 @@ volume, media keys and Print Screen stop working, and nothing arrives at the
 system at all. Doing the reorder in the scancode map instead keeps the top row
 usable.
 
-The scancode map moves two keys at driver level:
+Three key remaps move the bottom row:
 
-| Scancode | Becomes | Result |
+| Key | Becomes | Result |
 |---|---|---|
-| `LWin` `E05B` | `LAlt` `0038` | middle key is Option |
-| `LAlt` `0038` | `RCtrl` `E01D` | key next to Space is Command |
+| `Left Ctrl` | `Left Win` | leftmost key is Windows |
+| `Left Win` | `Left Alt` | middle key is Option |
+| `Left Alt` | `Right Ctrl` | key next to Space is Command |
 
-Command is mapped to the **right** Ctrl on purpose. It acts as Ctrl for every
-shortcut, but stays distinguishable from the left one — which is what lets
-`Control+Space` and `Command+Space` mean different things.
+Command is mapped to the **right** Ctrl. It acts as Ctrl for every shortcut,
+so `Command+C` copies, while staying distinguishable from a left Ctrl.
 
-The PowerToys layer handles everything a scancode map cannot, because swapping
-key identities cannot change a whole combination:
+There is deliberately no separate Control key. Windows has only one Ctrl
+concept, so a Control key next to a Command key does exactly the same thing —
+two keys, one function, and no Windows key anywhere. Giving the leftmost
+position to Windows instead buys back `Win+E`, `Win+R`, `Win+Tab`, the Start
+menu, and two things that matter more than they sound:
+
+- `Win+Space` switches the input language, which is the system's own switcher.
+  It works in elevated windows and on the lock screen, where a PowerToys hook
+  never reaches.
+- `Win+L` locks the screen. It cannot be produced any other way: Windows
+  reserves it, so no remapper can send it.
+
+Thirteen shortcut remaps do the text navigation, which swapping key identities
+cannot express:
 
 | Shortcut | Does |
 |---|---|
-| `Control+Space` | switch input language |
 | `Option+←/→` | move by word |
 | `Option+Shift+←/→` | select by word |
 | `Option+Backspace` | delete word |
@@ -58,11 +66,41 @@ key identities cannot change a whole combination:
 `Command+Backspace` (delete to start of line) is missing: Windows has no single
 shortcut for it and Keyboard Manager cannot emit a sequence.
 
-Two limits worth knowing. Keyboard Manager does not reach elevated windows
-unless PowerToys itself runs elevated, and never reaches the lock screen or UAC
-prompt. `Alt+Shift` is left untouched as a fallback way to switch layouts.
+### Turning it off for games
 
-Undo: `reg import keyboard\Remove-ScancodeMap.reg`, elevated, then reboot.
+```powershell
+.\keyboard\Toggle-MacLayout.ps1          # flip
+.\keyboard\Toggle-MacLayout.ps1 -Off     # stock Windows
+.\keyboard\Toggle-MacLayout.ps1 -Status  # just report
+```
+
+Worth having for two reasons. The leftmost key is Windows under this layout,
+and hitting it mid-match drops you to the Start menu. And with Keyboard Manager
+off there is no keyboard hook at all, which is what PowerToys recommends while
+gaming.
+
+Switching is instant and needs no administrator rights, because none of this
+touches HKLM.
+
+### Why not a scancode map
+
+The obvious way to reorder modifiers is `Scancode Map` under
+`HKLM\SYSTEM\CurrentControlSet\Control\Keyboard Layout`, and it is better in
+one respect: being a driver-level mapping, it also applies to elevated windows,
+UAC prompts and the lock screen, where no hook is allowed to run.
+
+It cannot be switched without rebooting, though. `kbdclass` reads the value
+when the service starts, so restarting the keyboard device does not pick up a
+change — tested, it does not. For a layout you want to flip before a gaming
+session that is disqualifying, so this uses Keyboard Manager instead.
+
+What that gives up is the lock screen and elevated windows. In practice it
+costs the text navigation there, and language switching falls back to
+`Alt+Shift`, which Windows keeps regardless. A PIN is digits either way.
+
+`keyboard\MacLayout-WinMode-APPLY.reg` and `keyboard\Remove-ScancodeMap.reg`
+are kept for anyone who wants the driver-level version and does not care about
+switching it.
 
 ---
 

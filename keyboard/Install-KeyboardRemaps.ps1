@@ -1,46 +1,35 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Writes the PowerToys Keyboard Manager remaps that give Windows macOS text
-    navigation, and points at the scancode map that reorders the modifiers.
+    Installs the macOS keyboard layout into PowerToys Keyboard Manager: the
+    bottom-row modifiers and macOS text navigation.
 .DESCRIPTION
-    Two layers are involved, and they do different jobs.
+    Three key remaps reorder the bottom row so it reads Windows, Option,
+    Command, Space:
 
-    Layer 1 - the scancode map (MacLayout-WinMode-APPLY.reg, needs admin and a
-    reboot). It reorders the bottom-left modifiers at driver level:
+        Left Ctrl -> Left Win     leftmost key is Windows
+        Left Win  -> Left Alt     middle key is Option
+        Left Alt  -> Right Ctrl   key next to Space is Command
 
-        LWin  (E05B) -> LAlt  (0038)   middle key becomes Option
-        LAlt  (0038) -> RCtrl (E01D)   key next to Space becomes Command
+    Command lands on the *right* Ctrl. It acts as Ctrl for every shortcut, so
+    Command+C copies, while staying distinguishable from a left Ctrl - which is
+    what lets Command+arrow mean something different from Ctrl+arrow.
 
-    That yields Control, Option, Command, Space - the layout of a real Mac
-    keyboard - while the keyboard itself stays in Windows mode.
+    There is deliberately no separate Control key. Windows has one Ctrl
+    concept, so a Control key beside a Command key does the same thing: two
+    keys, one function, and no Windows key anywhere. The leftmost position buys
+    back Win+E, Win+R, Win+Tab, the Start menu, Win+Space for the language
+    (the system's own switcher) and Win+L, which no remapper can synthesise
+    because Windows reserves it.
 
-    Keep the keyboard in Windows mode. A keyboard's own "Mac mode" produces the
-    same modifier order, but its top row then sends Apple HID codes that Windows
-    does not decode: volume, media and Print Screen stop working entirely.
-    Doing the reorder here instead keeps the function row usable.
+    Thirteen shortcut remaps then provide text navigation, which swapping key
+    identities cannot express: Option+arrows by word, Command+arrows to line
+    ends, and the Shift variants for selection. Each Shift variant needs its
+    own entry, since Keyboard Manager matches a combination as a whole.
 
-    Command is deliberately mapped to the RIGHT Ctrl. It behaves as Ctrl for
-    every shortcut, but stays distinguishable from the left one, which is what
-    lets Control+Space and Command+Space mean different things.
-
-    Layer 2 - this script. Scancode maps can only swap key identities, so
-    anything that changes a whole combination lives in PowerToys:
-
-        Control+Space          -> Win+Space        switch input language
-        Option+Left/Right      -> Ctrl+Left/Right  move by word
-        Option+Shift+arrows    -> select by word
-        Option+Backspace       -> delete word
-        Command+Left/Right     -> Home/End
-        Command+Up/Down        -> document start/end
-        Command+Shift+arrows   -> the selecting variants
-
-    There is no Command+Backspace ("delete to start of line"): Windows has no
-    single shortcut for it and Keyboard Manager cannot emit a sequence.
-.NOTES
-    Keyboard Manager does not reach elevated windows unless PowerToys itself
-    runs elevated, and never reaches the lock screen or UAC. Alt+Shift is left
-    untouched as a fallback way to switch layouts.
+    Keeping all of it at user level is a deliberate trade - see the README for
+    why this is not a scancode map. Use Toggle-MacLayout.ps1 to switch it off
+    for games.
 .EXAMPLE
     .\Install-KeyboardRemaps.ps1
 #>
@@ -52,15 +41,19 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # 8=Backspace 32=Space 35=End 36=Home 37=Left 38=Up 39=Right 40=Down
-# 91=Win 160=Shift 162=LCtrl 163=RCtrl(Command) 164=LAlt(Option)
+# 91=LWin 160=Shift 162=LCtrl 163=RCtrl(Command) 164=LAlt(Option)
 $config = @'
 {
-    "remapKeys": { "inProcess": [] },
+    "remapKeys": {
+        "inProcess": [
+            { "originalKeys": "162", "newRemapKeys": "91"  },
+            { "originalKeys": "91",  "newRemapKeys": "164" },
+            { "originalKeys": "164", "newRemapKeys": "163" }
+        ]
+    },
     "remapKeysToText": { "inProcess": [] },
     "remapShortcuts": {
         "global": [
-            { "originalKeys": "162;32",     "newRemapKeys": "91;32"      },
-
             { "originalKeys": "164;37",     "newRemapKeys": "162;37"     },
             { "originalKeys": "164;39",     "newRemapKeys": "162;39"     },
             { "originalKeys": "164;160;37", "newRemapKeys": "162;160;37" },
@@ -88,9 +81,9 @@ if (-not (Test-Path $base)) { throw "PowerToys is not installed ($base not found
 $kmDir = Join-Path $base 'Keyboard Manager'
 New-Item -ItemType Directory -Force -Path $kmDir | Out-Null
 $target = Join-Path $kmDir 'default.json'
-if (Test-Path $target) { Copy-Item $target "$target.bak" -Force; Write-Host "Backed up existing remaps to default.json.bak" }
+if (Test-Path $target) { Copy-Item $target "$target.bak" -Force; Write-Host 'Backed up existing remaps to default.json.bak' }
 [IO.File]::WriteAllText($target, $config, (New-Object System.Text.UTF8Encoding($false)))
-Write-Host "Wrote 14 remaps to $target"
+Write-Host "Wrote 3 key remaps and 13 shortcut remaps to $target"
 
 # Keyboard Manager ships disabled; flip it on without disturbing other modules.
 $settings = Join-Path $base 'settings.json'
@@ -100,6 +93,14 @@ if (Test-Path $settings) {
         [IO.File]::WriteAllText($settings, ($raw -replace '("Keyboard Manager"\s*:\s*)false', '${1}true'), (New-Object System.Text.UTF8Encoding($false)))
         Write-Host 'Enabled the Keyboard Manager module'
     }
+}
+
+# A leftover Scancode Map would be applied by the driver before any of this and
+# would fight it. Only a reboot clears one that is already loaded.
+$sc = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Keyboard Layout' -Name 'Scancode Map' -ErrorAction SilentlyContinue)
+if ($sc) {
+    Write-Warning 'A Scancode Map exists in the registry and will fight these remaps.'
+    Write-Warning 'Remove it (elevated) and reboot: keyboard\Remove-ScancodeMap.reg'
 }
 
 if (-not $NoRestart) {
@@ -121,5 +122,4 @@ if (-not $NoRestart) {
 }
 
 Write-Host ''
-Write-Host 'Remaps are live. The modifier reorder is separate:'
-Write-Host '  reg import MacLayout-WinMode-APPLY.reg   (elevated, then reboot)'
+Write-Host 'Done. Toggle-MacLayout.ps1 switches this off for games.'
