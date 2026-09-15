@@ -41,7 +41,9 @@ $startupDir = [Environment]::GetFolderPath('Startup')
 
 $indicatorExe = Join-Path $env:LOCALAPPDATA 'CaretLangIndicator\CaretLangIndicator.exe'
 $indicatorArgs = '-OnlyOnChange -Switcher'
-$islandExe    = 'C:\Users\mishmax\projects\DynamicIsland\standalone\DynamicIsland.exe'
+# The island installs itself into the profile, the same way the indicator does;
+# the copy in the project folder is only the build output.
+$islandExe    = Join-Path $env:LOCALAPPDATA 'DynamicIsland\DynamicIsland.exe'
 $islandConfig = Join-Path $env:APPDATA 'DynamicIsland\config.ini'
 
 function Note([string]$text) {
