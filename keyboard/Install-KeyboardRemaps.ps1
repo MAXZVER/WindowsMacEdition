@@ -27,6 +27,16 @@
     ends, and the Shift variants for selection. Each Shift variant needs its
     own entry, since Keyboard Manager matches a combination as a whole.
 
+    Command+Left and Command+Right carry exactMatch. Without it a remap whose
+    target is a single key still fires when extra keys are held, so Win+Ctrl+Left
+    - switching virtual desktops - was being eaten and turned into Home before
+    it ever reached the system.
+
+    One thing this cannot do, being a hook: it also rewrites keystrokes that
+    other software synthesises. Logitech Options+ sending Win+Ctrl+Left for a
+    mouse button is the case that bites. Switch the layout off if you need that
+    button; the keyboard shortcut works either way.
+
     Keeping all of it at user level is a deliberate trade - see the README for
     why this is not a scancode map. Use Toggle-MacLayout.ps1 to switch it off
     for games.
@@ -60,8 +70,8 @@ $config = @'
             { "originalKeys": "164;160;39", "newRemapKeys": "162;160;39" },
             { "originalKeys": "164;8",      "newRemapKeys": "162;8"      },
 
-            { "originalKeys": "163;37",     "newRemapKeys": "36"         },
-            { "originalKeys": "163;39",     "newRemapKeys": "35"         },
+            { "originalKeys": "163;37",     "newRemapKeys": "36", "exactMatch": true },
+            { "originalKeys": "163;39",     "newRemapKeys": "35", "exactMatch": true },
             { "originalKeys": "163;160;37", "newRemapKeys": "160;36"     },
             { "originalKeys": "163;160;39", "newRemapKeys": "160;35"     },
             { "originalKeys": "163;38",     "newRemapKeys": "162;36"     },
