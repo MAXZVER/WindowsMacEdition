@@ -40,7 +40,10 @@ $snapshotFile   = Join-Path $PSScriptRoot 'island-config.ini'
 $startupDir = [Environment]::GetFolderPath('Startup')
 
 $indicatorExe = Join-Path $env:LOCALAPPDATA 'CaretLangIndicator\CaretLangIndicator.exe'
-$indicatorArgs = '-OnlyOnChange -Switcher'
+# -Log is on while we are still finding out why the indicator vanished once
+# without leaving a crash record. Drop it when that is settled; it writes a
+# line per layout change and grows unbounded.
+$indicatorArgs = '-OnlyOnChange -Switcher -Log "{0}"' -f (Join-Path $env:LOCALAPPDATA 'CaretLangIndicator\indicator.log')
 # The island installs itself into the profile, the same way the indicator does;
 # the copy in the project folder is only the build output.
 $islandExe    = Join-Path $env:LOCALAPPDATA 'DynamicIsland\DynamicIsland.exe'
@@ -128,6 +131,28 @@ function Ensure-Running([string]$processName, [string]$exe, [string]$arguments) 
 
 Ensure-Running 'CaretLangIndicator' $indicatorExe $indicatorArgs
 Ensure-Running 'DynamicIsland'      $islandExe    ''
+
+# PowerToys carries the whole keyboard layout, so if it is not up the bottom
+# row is stock Windows and nothing says why. Check its autostart as well as the
+# process: settings.json can claim startup is on while no Run entry and no
+# scheduled task exist, which is exactly how this failed once - after a logon
+# the layout simply was not there.
+$ptExe = Join-Path $env:LOCALAPPDATA 'PowerToys\PowerToys.exe'
+if (-not (Test-Path $ptExe)) { $ptExe = Join-Path $env:ProgramFiles 'PowerToys\PowerToys.exe' }
+if (Test-Path $ptExe) {
+    Ensure-Running 'PowerToys' $ptExe ''
+
+    $runKey = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+    $registered = $null -ne (Get-ItemProperty $runKey -Name 'PowerToys' -ErrorAction SilentlyContinue)
+    $scheduled  = $null -ne (Get-ScheduledTask -ErrorAction SilentlyContinue |
+                             Where-Object { $_.TaskName -match 'PowerToys' })
+    if (-not $registered -and -not $scheduled) {
+        Set-ItemProperty -Path $runKey -Name 'PowerToys' -Value ('"{0}"' -f $ptExe)
+        Note 'PowerToys had no autostart registered - added a Run entry'
+    }
+} else {
+    Note 'PowerToys is not installed - the keyboard layout will not be active'
+}
 
 # Windhawk is deliberately not part of this setup any more. It carried nine
 # mods - smooth scrolling, menu and Explorer animations, invisible borders -
